@@ -11,13 +11,13 @@ import (
 	"time"
 
 	log "github.com/Sirupsen/logrus"
-	r "github.com/dancannon/gorethink"
 	"github.com/gorilla/sessions"
 	"github.com/samalba/dockerclient"
 	"github.com/shipyard/shipyard"
 	"github.com/shipyard/shipyard/auth"
 	"github.com/shipyard/shipyard/dockerhub"
 	"github.com/shipyard/shipyard/version"
+	r "gopkg.in/dancannon/gorethink.v2"
 )
 
 const (
@@ -37,6 +37,7 @@ const (
 )
 
 var (
+	ErrLoginFailure               = errors.New("无效的用户名和密码")
 	ErrAccountExists              = errors.New("账户已存在")
 	ErrAccountDoesNotExist        = errors.New("账户不存在")
 	ErrRoleDoesNotExist           = errors.New("角色不存在")
@@ -115,11 +116,11 @@ type (
 )
 
 func NewManager(addr string, database string, authKey string, client *dockerclient.DockerClient, disableUsageInfo bool, authenticator auth.Authenticator) (Manager, error) {
+	log.Debug("setting up rethinkdb session")
 	session, err := r.Connect(r.ConnectOpts{
 		Address:  addr,
 		Database: database,
 		AuthKey:  authKey,
-		MaxIdle:  10,
 	})
 	if err != nil {
 		return nil, err
@@ -251,7 +252,7 @@ func (m DefaultManager) ScaleContainer(id string, numInstances int) ScaleResult 
 			config.Hostname = ""
 			hostConfig := containerInfo.HostConfig
 			config.HostConfig = *hostConfig // sending hostconfig via the Start-endpoint is deprecated starting with docker-engine 1.12
-			id, err := m.client.CreateContainer(config, "")
+			id, err := m.client.CreateContainer(config, "", nil)
 			if err != nil {
 				errChan <- err
 				return
@@ -479,13 +480,19 @@ func (m DefaultManager) Authenticate(username, password string) (bool, error) {
 		acct, err := m.Account(username)
 		if err != nil {
 			log.Error(err)
-			return false, err
+			return false, ErrLoginFailure
 		}
 
 		passwordHash = acct.Password
 	}
 
-	return m.authenticator.Authenticate(username, password, passwordHash)
+	a, err := m.authenticator.Authenticate(username, password, passwordHash)
+		if !a || err != nil {
+			log.Error(ErrLoginFailure)
+			return false, ErrLoginFailure
+		}
+
+	return true, nil
 }
 
 func (m DefaultManager) NewAuthToken(username string, userAgent string) (*auth.AuthToken, error) {
